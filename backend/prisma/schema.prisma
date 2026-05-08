@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum CartStatus {
+  ACTIVE
+  LOCKED
+  PAID
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+
+  cartsCreated Cart[]           @relation("CartCreator")
+  participants CartParticipant[]
+  ordersPaid   Order[]
+}
+
+model Restaurant {
+  id          String     @id @default(cuid())
+  name        String
+  cuisine     String
+  description String
+  address     String
+  imageUrl    String?
+  rating      Float      @default(4.5)
+  menuItems   MenuItem[]
+  carts       Cart[]
+}
+
+model MenuItem {
+  id           String   @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  name         String
+  description  String
+  priceCents   Int
+  imageUrl     String?
+  cartItems    CartItem[]
+}
+
+model Cart {
+  id              String     @id @default(cuid())
+  shareToken      String     @unique @default(cuid())
+  status          CartStatus @default(ACTIVE)
+  restaurantId    String
+  restaurant      Restaurant @relation(fields: [restaurantId], references: [id])
+  createdById     String
+  createdBy       User       @relation("CartCreator", fields: [createdById], references: [id])
+  stripeSessionId String?
+  deliveryLocation String?
+  isLocked         Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  participants CartParticipant[]
+  items        CartItem[]
+  order        Order?
+}
+
+model CartParticipant {
+  id       String   @id @default(cuid())
+  cartId   String
+  cart     Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@unique([cartId, userId])
+}
+
+model CartItem {
+  id         String   @id @default(cuid())
+  cartId     String
+  cart       Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  quantity   Int
+
+  @@unique([cartId, menuItemId])
+}
+
+enum PaymentMethod {
+  STRIPE
+  COD
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  cartId          String      @unique
+  cart            Cart        @relation(fields: [cartId], references: [id])
+  payerId         String?
+  payer           User?       @relation(fields: [payerId], references: [id])
+  totalCents      Int
+  paymentMethod   PaymentMethod @default(COD)
+  stripePaymentId String?
+  status          String      @default("CONFIRMED")
+  createdAt       DateTime    @default(now())
+  lines           OrderLine[]
+}
+
+model OrderLine {
+  id         String @id @default(cuid())
+  orderId    String
+  order      Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItemId String
+  itemName   String
+  priceCents Int
+  quantity   Int
+}
