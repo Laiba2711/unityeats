@@ -10,7 +10,9 @@ import { useSearchParams } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { ReceiptModal } from "@/components/receipt-modal";
 
-export default function CheckoutSuccessPage() {
+import { Suspense } from "react";
+
+function CheckoutSuccessContent() {
   const searchParams = useSearchParams();
   const orderId = searchParams.get("orderId");
   const [timeLeft, setTimeLeft] = useState(1800); // 30 minutes in seconds
@@ -71,7 +73,7 @@ export default function CheckoutSuccessPage() {
       clearInterval(interval);
       clearInterval(timer);
     };
-  }, [orderId]);
+  }, [orderId, searchParams]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -224,5 +226,17 @@ export default function CheckoutSuccessPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function CheckoutSuccessPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex flex-col min-h-screen bg-background hero-gradient items-center justify-center">
+        <Loader2 className="w-12 h-12 text-primary animate-spin" />
+      </div>
+    }>
+      <CheckoutSuccessContent />
+    </Suspense>
   );
 }

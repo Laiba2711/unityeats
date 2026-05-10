@@ -126,6 +126,20 @@ export default function SharedCartPage({ params }: { params: Promise<{ token: st
 
   const updateQuantity = async (menuItemId: string, newQty: number) => {
     if (newQty < 1) return;
+    
+    // Optimistic update
+    const previousCart = cart;
+    if (cart) {
+      setCart({
+        ...cart,
+        items: cart.items.map(item => 
+          item.menuItem.id === menuItemId 
+            ? { ...item, quantity: newQty } 
+            : item
+        )
+      });
+    }
+
     try {
       await fetchApi(`/carts/${token}/items`, {
         method: "POST",
@@ -133,11 +147,38 @@ export default function SharedCartPage({ params }: { params: Promise<{ token: st
       });
     } catch (err: any) {
       alert(err.message);
+      // Rollback on error
+      setCart(previousCart);
     }
   };
 
   const addItem = async (menuItemId: string) => {
     setAddingId(menuItemId);
+    
+    // Optimistic update
+    const previousCart = cart;
+    if (cart) {
+      const menuI = cart.restaurant.menuItems.find(m => m.id === menuItemId);
+      if (menuI) {
+        const existingItem = cart.items.find(i => i.menuItem.id === menuItemId);
+        let newItems;
+        
+        if (existingItem) {
+          newItems = cart.items.map(i => 
+            i.menuItem.id === menuItemId ? { ...i, quantity: i.quantity + 1 } : i
+          );
+        } else {
+          newItems = [...cart.items, {
+            id: `temp-${Date.now()}`,
+            quantity: 1,
+            menuItem: menuI
+          }];
+        }
+
+        setCart({ ...cart, items: newItems });
+      }
+    }
+
     try {
       await fetchApi(`/carts/${token}/items`, {
         method: "POST",
@@ -145,6 +186,7 @@ export default function SharedCartPage({ params }: { params: Promise<{ token: st
       });
     } catch (err: any) {
       alert(err.message);
+      setCart(previousCart);
     } finally {
       setAddingId(null);
     }

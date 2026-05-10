@@ -22,10 +22,15 @@ router.get("/active", async (req, res) => {
       return;
     }
 
+    const { restaurantId } = req.query;
+
     const cartParticipant = await prisma.cartParticipant.findFirst({
       where: {
         userId: user.id,
-        cart: { status: "ACTIVE" },
+        cart: { 
+          status: "ACTIVE",
+          restaurantId: restaurantId ? String(restaurantId) : undefined,
+        },
       },
       include: {
         cart: {

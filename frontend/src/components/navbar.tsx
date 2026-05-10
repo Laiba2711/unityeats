@@ -7,6 +7,7 @@ import { fetchApi } from "@/lib/api";
 import { LogOut, User as UserIcon, ShoppingBag, MapPin, PlusCircle, Search, Menu, X, ArrowRight } from "lucide-react";
 import { useState, useEffect } from "react";
 import { LocationModal } from "./location-modal";
+import { socket } from "@/lib/socket";
 
 export function Navbar() {
   const { user, logout } = useAuth();
@@ -14,6 +15,7 @@ export function Navbar() {
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [itemCount, setItemCount] = useState(0);
+  const [activeCartToken, setActiveCartToken] = useState<string | null>(null);
   const pathname = usePathname();
   
   const isCartPage = pathname?.startsWith("/cart/");
@@ -21,17 +23,43 @@ export function Navbar() {
   const loginUrl = isCartPage ? `/login?redirect=${pathname}` : "/login";
   const registerUrl = isCartPage ? `/register?redirect=${pathname}` : "/register";
 
+  const refreshActiveCart = () => {
+    if (user) {
+      fetchApi("/carts/active")
+        .then(data => {
+          setItemCount(data.itemCount || 0);
+          setActiveCartToken(data.token);
+          
+          // Join the cart room for real-time updates if we have a token
+          if (data.token) {
+            socket.emit("join_cart", data.token);
+          }
+        })
+        .catch(() => {
+          setItemCount(0);
+          setActiveCartToken(null);
+        });
+    } else {
+      setItemCount(0);
+      setActiveCartToken(null);
+    }
+  };
+
   useEffect(() => {
-    // ... rest of useEffect
+    refreshActiveCart();
+
     const saved = localStorage.getItem("delivery_address");
     if (saved) setLocation(saved);
     else setLocation("New York, NY");
 
-    if (user) {
-      fetchApi("/carts/active")
-        .then(data => setItemCount(data.itemCount || 0))
-        .catch(() => setItemCount(0));
-    }
+    // Listen for cart refreshes from any participant
+    socket.on("cart:refresh", () => {
+      refreshActiveCart();
+    });
+
+    return () => {
+      socket.off("cart:refresh");
+    };
   }, [user]);
 
   const handleLocationSelect = (addr: string) => {
@@ -89,7 +117,7 @@ export function Navbar() {
           <div className="flex items-center gap-3 md:gap-6">
             {!isAdminPage && (
               <Link 
-                href="/cart" 
+                href={activeCartToken ? `/cart/${activeCartToken}` : "/cart"} 
                 className="p-2 md:p-2.5 bg-foreground/[0.03] hover:bg-primary/10 hover:text-primary rounded-xl transition-all relative group"
                 title="My Active Cart"
               >

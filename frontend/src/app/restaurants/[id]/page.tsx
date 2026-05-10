@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { useRouter, useSearchParams } from "next/navigation";
 import { UtensilsCrossed, ArrowLeft, Star, ShoppingCart, Plus, ShoppingBag } from "lucide-react";
 import Link from "next/link";
+import { useAuth } from "@/lib/auth-context";
 
 type MenuItem = {
   id: string;
@@ -26,27 +27,45 @@ type Restaurant = {
   menuItems: MenuItem[];
 };
 
-export default function RestaurantDetailPage({ params }: { params: Promise<{ id: string }> }) {
+import { Suspense } from "react";
+
+function RestaurantDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const searchParams = useSearchParams();
   const cartToken = searchParams.get("cart");
   
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
+  const [activeToken, setActiveToken] = useState<string | null>(cartToken);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [creatingCart, setCreatingCart] = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
   
   const router = useRouter();
+  const { user } = useAuth();
 
   useEffect(() => {
     fetchApi(`/restaurants/${id}`)
       .then((data) => setRestaurant(data.restaurant))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [id]);
+
+    // Also check if user has an active cart for this restaurant
+    if (user) {
+      fetchApi(`/carts/active?restaurantId=${id}`)
+        .then(data => {
+          if (data.token) setActiveToken(data.token);
+        })
+        .catch(console.error);
+    }
+  }, [id, user]);
 
   const handleStartCart = async () => {
+    if (activeToken) {
+      router.push(`/cart/${activeToken}`);
+      return;
+    }
+
     setCreatingCart(true);
     try {
       const data = await fetchApi("/carts", {
@@ -65,7 +84,7 @@ export default function RestaurantDetailPage({ params }: { params: Promise<{ id:
   const handleAddItem = async (menuItemId: string) => {
     setAddingId(menuItemId);
     try {
-      let currentToken = cartToken;
+      let currentToken = activeToken;
 
       // If no cart, create one first
       if (!currentToken) {
@@ -75,7 +94,7 @@ export default function RestaurantDetailPage({ params }: { params: Promise<{ id:
           body: JSON.stringify({ restaurantId: id }),
         });
         currentToken = data.cart.shareToken;
-        // We don't push yet, we add the item first then redirect for better UX
+        setActiveToken(currentToken);
       }
 
       await fetchApi(`/carts/${currentToken}/items`, {
@@ -83,8 +102,8 @@ export default function RestaurantDetailPage({ params }: { params: Promise<{ id:
         body: JSON.stringify({ menuItemId, quantity: 1 }),
       });
 
-      // After adding, redirect to the cart page
-      router.push(`/cart/${currentToken}`);
+      // No longer redirecting automatically - let the user stay and add more!
+      // The Navbar will update via socket or we could trigger a local refresh if needed.
     } catch (err: any) {
       alert("Please login to add items to a cart!");
       router.push("/login");
@@ -140,9 +159,9 @@ export default function RestaurantDetailPage({ params }: { params: Promise<{ id:
                 <p className="text-lg text-foreground/60 max-w-2xl">{restaurant.description}</p>
               </div>
 
-              {cartToken ? (
+              {activeToken ? (
                 <Link
-                  href={`/cart/${cartToken}`}
+                  href={`/cart/${activeToken}`}
                   className="flex items-center gap-3 px-8 py-4 bg-primary hover:bg-primary-hover text-white font-bold text-lg rounded-2xl shadow-xl shadow-primary/30 transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
                   <ShoppingBag className="w-6 h-6" />
@@ -204,5 +223,13 @@ export default function RestaurantDetailPage({ params }: { params: Promise<{ id:
         </div>
       </main>
     </div>
+  );
+}
+
+export default function RestaurantDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Loading...</div>}>
+      <RestaurantDetailContent params={params} />
+    </Suspense>
   );
 }
