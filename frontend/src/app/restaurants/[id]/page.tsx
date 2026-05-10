@@ -105,8 +105,12 @@ function RestaurantDetailContent({ params }: { params: Promise<{ id: string }> }
       // No longer redirecting automatically - let the user stay and add more!
       // The Navbar will update via socket or we could trigger a local refresh if needed.
     } catch (err: any) {
-      alert("Please login to add items to a cart!");
-      router.push("/login");
+      if (err.message.toLowerCase().includes("unauthorized") || err.message.toLowerCase().includes("login")) {
+        alert("Please login to add items to a cart!");
+        router.push(`/login?redirect=${window.location.pathname}${window.location.search}`);
+      } else {
+        alert(`Error: ${err.message}`);
+      }
     } finally {
       setAddingId(null);
       setCreatingCart(false);

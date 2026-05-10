@@ -18,8 +18,7 @@ router.get("/active", async (req, res) => {
     const session = await getSession(req, res);
     const user = await requireUser(session);
     if (!user) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
     const { restaurantId } = req.query;
@@ -29,14 +28,16 @@ router.get("/active", async (req, res) => {
         userId: user.id,
         cart: { 
           status: "ACTIVE",
+          isLocked: false,
           restaurantId: restaurantId ? String(restaurantId) : undefined,
         },
       },
       include: {
         cart: {
-          include: {
-            _count: {
-              select: { items: true }
+          select: {
+            shareToken: true,
+            items: {
+              select: { id: true }
             }
           }
         },
@@ -44,18 +45,17 @@ router.get("/active", async (req, res) => {
       orderBy: { joinedAt: "desc" },
     });
 
-    if (!cartParticipant) {
-      res.json({ itemCount: 0, token: null });
-      return;
+    if (!cartParticipant || !cartParticipant.cart) {
+      return res.json({ itemCount: 0, token: null });
     }
 
-    res.json({ 
+    return res.json({ 
       token: cartParticipant.cart.shareToken,
-      itemCount: cartParticipant.cart._count.items
+      itemCount: cartParticipant.cart.items.length
     });
   } catch (error) {
-    console.error("Active cart error:", error);
-    res.status(500).json({ error: "Unexpected error" });
+    console.error("Active cart error [FULL DETAILS]:", error);
+    return res.status(500).json({ error: "Internal server error during active cart lookup" });
   }
 });
 
@@ -70,7 +70,7 @@ router.post("/", async (req, res) => {
     }
 
     const bodySchema = z.object({
-      restaurantId: z.string().cuid(),
+      restaurantId: z.string(),
     });
 
     const parsed = bodySchema.safeParse(req.body);
@@ -100,8 +100,13 @@ router.post("/", async (req, res) => {
 router.get("/:token", async (req, res) => {
   try {
     const { token } = req.params;
-    const cart = await prisma.cart.findUnique({
-      where: { shareToken: token },
+    const cart = await prisma.cart.findFirst({
+      where: {
+        OR: [
+          { shareToken: token },
+          { id: token }
+        ]
+      },
       include: {
         restaurant: {
           include: { menuItems: true },
@@ -231,12 +236,13 @@ router.post("/:token/items", async (req, res) => {
     }
 
     const bodySchema = z.object({
-      menuItemId: z.string().cuid(),
+      menuItemId: z.string(),
       quantity: z.number().int().min(1),
     });
 
     const parsed = bodySchema.safeParse(req.body);
     if (!parsed.success) {
+      console.error("Cart item validation failed:", parsed.error.format());
       res.status(400).json({ error: "Invalid item data" });
       return;
     }
@@ -339,8 +345,10 @@ router.post("/:token/checkout", async (req, res) => {
       return;
     }
 
-    const cart = await prisma.cart.findUnique({
-      where: { shareToken: token },
+    const cart = await prisma.cart.findFirst({
+      where: {
+        OR: [{ shareToken: token }, { id: token }]
+      },
       include: {
         items: { include: { menuItem: true } },
         participants: true,
@@ -363,9 +371,25 @@ router.post("/:token/checkout", async (req, res) => {
     );
     const totalCents = subtotal + 250; // Including service fee
 
-    // Create the order
-    const order = await prisma.order.create({
-      data: {
+    // Upsert the order (create or update if exists)
+    const order = await prisma.order.upsert({
+      where: { cartId: cart.id },
+      update: {
+        payerId: user.id,
+        totalCents,
+        paymentMethod: paymentMethod === "STRIPE" ? "STRIPE" : "COD",
+        status: paymentMethod === "STRIPE" ? "PENDING_STRIPE" : "CONFIRMED",
+        lines: {
+          deleteMany: {},
+          create: cart.items.map((item) => ({
+            menuItemId: item.menuItem.id,
+            itemName: item.menuItem.name,
+            priceCents: item.menuItem.priceCents,
+            quantity: item.quantity,
+          })),
+        },
+      },
+      create: {
         cartId: cart.id,
         payerId: user.id,
         totalCents,
@@ -393,49 +417,53 @@ router.post("/:token/checkout", async (req, res) => {
     if (paymentMethod === "STRIPE") {
       const frontendUrl = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
       
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          ...cart.items.map((item) => ({
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: item.menuItem.name,
-                description: item.menuItem.description,
-                images: item.menuItem.imageUrl ? [item.menuItem.imageUrl] : [],
+      try {
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          line_items: [
+            ...cart.items.map((item) => ({
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: item.menuItem.name,
+                  description: item.menuItem.description,
+                  images: item.menuItem.imageUrl ? [item.menuItem.imageUrl] : [],
+                },
+                unit_amount: item.menuItem.priceCents,
               },
-              unit_amount: item.menuItem.priceCents,
-            },
-            quantity: item.quantity,
-          })),
-          {
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: "Service Fee",
-                description: "UnityEats Delivery & Platform Fee",
+              quantity: item.quantity,
+            })),
+            {
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: "Service Fee",
+                  description: "UnityEats Delivery & Platform Fee",
+                },
+                unit_amount: 250,
               },
-              unit_amount: 250,
-            },
-            quantity: 1,
-          }
-        ],
-        mode: "payment",
-        success_url: `${frontendUrl}/checkout/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${frontendUrl}/cart/${token}`,
-        metadata: {
-          cartId: cart.id,
-          orderId: order.id,
-        },
-      });
-
-      res.json({ url: session.url });
+              quantity: 1,
+            }
+          ],
+          mode: "payment",
+          success_url: `${frontendUrl}/checkout/success?orderId=${order.id}&session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${frontendUrl}/cart/${token}`,
+          metadata: {
+            cartId: cart.id,
+            orderId: order.id,
+          },
+        });
+        res.json({ url: session.url });
+      } catch (stripeError) {
+        console.error("Stripe Session Error:", stripeError);
+        res.status(400).json({ error: "Could not initialize payment. Please try Cash on Delivery." });
+      }
     } else {
       res.json({ ok: true, orderId: order.id });
     }
   } catch (error) {
-    console.error("Checkout error:", error);
-    res.status(500).json({ error: "Unexpected error" });
+    console.error("Checkout error [FULL DETAILS]:", error);
+    res.status(500).json({ error: "Checkout failed. Please check backend logs." });
   }
 });
 
